@@ -1,0 +1,187 @@
+package gotoken
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/golang-jwt/jwt/v4"
+)
+
+const (
+	// HeaderAuthorization is the name of the header to obtain the bearer token from
+	HeaderAuthorization = "Authorization"
+	// HeaderAuthorizationBearerPrefix is the prefix to the Authorization header if it contains a bearer token
+	HeaderAuthorizationBearerPrefix = "Bearer "
+)
+
+// TokenMode is the method used to extract a token from an HTTP(S) request
+type TokenMode = string
+
+const (
+	// TokenModeRaw interpretes a header as a literal token
+	TokenModeRaw TokenMode = "raw"
+	// TokenModeBearer takes the token from an "Authorization: Bearer XXX" header
+	TokenModeBearer TokenMode = "bearer"
+	// TokenModeBasic takes the token from the username of an "Authorization: Basic XXX" header
+	TokenModeBasicUser TokenMode = "basic-user"
+	// TokenModeBasic takes the token from the password of an "Authorization: Basic XXX" header
+	TokenModeBasicPassword TokenMode = "basic-password"
+	// TokenModeBasic takes the token from a lookup table of trusted service account mTLS client certificate
+	TokenModeRobotTLS TokenMode = "robot-tls"
+	// TokenModeBasic takes the token from a lookup table of trusted service account mTLS client certificate taken from a header
+	TokenModeRobotTLSTerminated TokenMode = "robot-tls-terminated"
+)
+
+// A TokenGetter can extract a token from a request. Return patterns:
+// nil, false, nil - No token material was present
+// nil, true, err - Token material present but invalid
+// token, true, nil - Token present and valid
+// Functions must not return an error if that error indicates that the material cannot be obtained or is not present.
+type TokenGetter func(req *http.Request) (token *jwt.Token, present bool, err error)
+
+// A TokenStringGetter can extract a token string from a request, but does not parse or validate it.
+// If the token is not present, it should return an empty string
+type TokenStringGetter func(req *http.Request) string
+
+type TokenGetterChain struct {
+	Getters []TokenGetter
+}
+
+func (t *TokenGetterChain) Getter() TokenGetter {
+	return func(req *http.Request) (token *jwt.Token, present bool, err error) {
+		for _, getter := range t.Getters {
+			token, present, err := getter(req)
+			if token != nil {
+				return token, true, nil
+			}
+			if err != nil {
+				return nil, present, err
+			}
+		}
+		return nil, false, nil
+	}
+}
+
+type TokenGetterArgs struct {
+	HeaderName               string
+	LookupTable              RobotLookupTable
+	Keyfunc                  jwt.Keyfunc
+	InsecureSkipVerification bool
+	Parser                   *jwt.Parser
+}
+
+func GetTokenStringGetter(mode TokenMode, args *TokenGetterArgs) (TokenStringGetter, bool) {
+	switch mode {
+	case TokenModeRaw:
+		return GetRawTokenString(args.HeaderName), true
+	case TokenModeBearer:
+		return GetBearerTokenString(), true
+	case TokenModeBasicUser:
+		return GetBasicUserTokenString(), true
+	case TokenModeBasicPassword:
+		return GetBasicPasswordTokenString(), true
+	}
+	return nil, false
+}
+
+func GetTokenGetter(mode TokenMode, args *TokenGetterArgs) (TokenGetter, bool) {
+	switch mode {
+	case TokenModeRaw, TokenModeBearer, TokenModeBasicUser, TokenModeBasicPassword:
+		getter, ok := GetTokenStringGetter(mode, args)
+		if !ok {
+			panic("BUG: Mismatch between GetTokenGetter and GetTokenStringGetter")
+		}
+		return FromStringGetter(getter, args.Parser, args.InsecureSkipVerification, args.Keyfunc), true
+	case TokenModeRobotTLS:
+		return GetRobotTLSToken(args.LookupTable), true
+	case TokenModeRobotTLSTerminated:
+		return GetRobotTLSTerminatedToken(args.HeaderName, args.LookupTable), true
+	}
+	return nil, false
+}
+
+func GetRawTokenString(name string) TokenStringGetter {
+	return func(req *http.Request) string {
+		return req.Header.Get(name)
+	}
+}
+
+func GetBearerTokenString() TokenStringGetter {
+	return func(req *http.Request) string {
+		h := req.Header.Get(HeaderAuthorization)
+		prefix := HeaderAuthorizationBearerPrefix
+		if !strings.HasPrefix(h, prefix) {
+			return ""
+		}
+		return strings.TrimPrefix(h, prefix)
+	}
+}
+
+func GetBasicUserTokenString() TokenStringGetter {
+	return func(req *http.Request) string {
+		username, _, _ := req.BasicAuth()
+		return username
+	}
+}
+
+func GetBasicPasswordTokenString() TokenStringGetter {
+	return func(req *http.Request) string {
+		_, password, _ := req.BasicAuth()
+		return password
+	}
+}
+
+func ParseToken(s string, parser *jwt.Parser, insecure bool, keyFunc jwt.Keyfunc) (*jwt.Token, error) {
+	claims := jwt.MapClaims{}
+	if insecure {
+		token, _, err := parser.ParseUnverified(s, claims)
+		return token, err
+	} else {
+		return parser.ParseWithClaims(s, claims, keyFunc)
+	}
+}
+
+func FromStringGetter(g TokenStringGetter, parser *jwt.Parser, insecure bool, keyFunc jwt.Keyfunc) TokenGetter {
+	return func(req *http.Request) (token *jwt.Token, present bool, err error) {
+		tokenString := g(req)
+		if tokenString == "" {
+			return nil, false, nil
+		}
+		token, err = ParseToken(tokenString, parser, insecure, keyFunc)
+		return token, true, err
+	}
+}
+
+func GetRobotTLSToken(robots RobotLookupTable) TokenGetter {
+	return func(req *http.Request) (token *jwt.Token, present bool, err error) {
+		cert, ok, err := GetRobotCertHTTPS(req)
+		if !ok {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, true, err
+		}
+		robot, ok := robots.Lookup(cert)
+		if !ok {
+			return nil, true, ErrNoSuchRobot
+		}
+		return robot.Token, true, nil
+	}
+}
+
+func GetRobotTLSTerminatedToken(name string, robots RobotLookupTable) TokenGetter {
+	return func(req *http.Request) (token *jwt.Token, present bool, err error) {
+		cert, ok, err := GetRobotCertHTTP(name, req)
+		if !ok {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, true, err
+		}
+		robot, ok := robots.Lookup(cert)
+		if !ok {
+			return nil, true, ErrNoSuchRobot
+		}
+		return robot.Token, true, nil
+	}
+}
