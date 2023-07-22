@@ -1,6 +1,7 @@
 package gotoken
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -70,6 +71,50 @@ type TokenGetterArgs struct {
 	Parser                   *jwt.Parser
 }
 
+func (t *TokenGetterArgs) Secure(keyfunc jwt.Keyfunc) *TokenGetterArgs {
+	t.InsecureSkipVerification = false
+	t.Keyfunc = keyfunc
+	return t
+}
+
+func (t *TokenGetterArgs) Insecure() *TokenGetterArgs {
+	t.InsecureSkipVerification = true
+	t.Keyfunc = nil
+	return t
+}
+
+func (t *TokenGetterArgs) Raw(headerName string, parser *jwt.Parser) (TokenMode, *TokenGetterArgs) {
+	t.HeaderName = headerName
+	t.Parser = parser
+	return TokenModeRaw, t
+}
+
+func (t *TokenGetterArgs) Bearer(parser *jwt.Parser) (TokenMode, *TokenGetterArgs) {
+	t.Parser = parser
+	return TokenModeBearer, t
+}
+
+func (t *TokenGetterArgs) BasicUser(parser *jwt.Parser) (TokenMode, *TokenGetterArgs) {
+	t.Parser = parser
+	return TokenModeBasicUser, t
+}
+
+func (t *TokenGetterArgs) BasicPassword(parser *jwt.Parser) (TokenMode, *TokenGetterArgs) {
+	t.Parser = parser
+	return TokenModeBasicPassword, t
+}
+
+func (t *TokenGetterArgs) RobotTLSTerminated(headerName string, lookupTable RobotLookupTable) (TokenMode, *TokenGetterArgs) {
+	t.HeaderName = headerName
+	t.LookupTable = lookupTable
+	return TokenModeRobotTLSTerminated, t
+}
+
+func (t *TokenGetterArgs) RobotTLS(lookupTable RobotLookupTable) (TokenMode, *TokenGetterArgs) {
+	t.LookupTable = lookupTable
+	return TokenModeRobotTLS, t
+}
+
 func GetTokenStringGetter(mode TokenMode, args *TokenGetterArgs) (TokenStringGetter, bool) {
 	switch mode {
 	case TokenModeRaw:
@@ -136,8 +181,10 @@ func ParseToken(s string, parser *jwt.Parser, insecure bool, keyFunc jwt.Keyfunc
 	if insecure {
 		token, _, err := parser.ParseUnverified(s, claims)
 		return token, err
-	} else {
+	} else if keyFunc != nil {
 		return parser.ParseWithClaims(s, claims, keyFunc)
+	} else {
+		return nil, fmt.Errorf("Keyfunc was null, this disables verification of JWT signatures. You must explicitly set insecure=true to do this")
 	}
 }
 
@@ -155,11 +202,8 @@ func FromStringGetter(g TokenStringGetter, parser *jwt.Parser, insecure bool, ke
 func GetRobotTLSToken(robots RobotLookupTable) TokenGetter {
 	return func(req *http.Request) (token *jwt.Token, present bool, err error) {
 		cert, ok, err := GetRobotCertHTTPS(req)
-		if !ok {
-			return nil, false, nil
-		}
-		if err != nil {
-			return nil, true, err
+		if !ok || err != nil {
+			return nil, ok, err
 		}
 		robot, ok := robots.Lookup(cert)
 		if !ok {

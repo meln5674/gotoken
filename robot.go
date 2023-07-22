@@ -42,6 +42,9 @@ func GetRobotCertHTTP(name string, req *http.Request) (*x509.Certificate, bool, 
 }
 
 func GetRobotCertHTTPS(req *http.Request) (*x509.Certificate, bool, error) {
+	if req.TLS == nil {
+		return nil, false, fmt.Errorf("Not a TLS request")
+	}
 	if len(req.TLS.PeerCertificates) == 0 {
 		return nil, false, nil
 	}
