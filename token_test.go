@@ -21,6 +21,7 @@ import (
 
 const keyString = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEVs/o5+uQbTjL3chynL4wXgUg2R9\nq9UU8I5mEovUf86QZ7kOBIjJwqnzD1omageEHWwHdBO6B+dFabmdT9POxg==\n-----END PUBLIC KEY-----"
 const tokenString = `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.tyh-VfuzIxCyGYDlkBA7DfyjrqmSHu6pQ2hoZuFqUSLPNY2N0mpHb3nk5K17HWP_3cYHBw7AhHale5wky6-sVA`
+const symmetricTokenString = `se8BiDtp4jxgnowkekRbk3z8CsFdybJdJhWg9CxunFxTDGb5ydDe0L3BSNoKG53D`
 
 var defaultParser = jwt.NewParser()
 
@@ -414,4 +415,32 @@ var _ = Describe("TLS Robot Mode", Ordered, func() {
 		missingTokenTest(mode, args, r)
 	})
 
+})
+
+var _ = Describe("Symmetric Robot", func() {
+	table := gotoken.MakeSymmetricRobotLookupTable([]gotoken.SymmetricRobot{
+		{
+			Name:        "test",
+			SecretToken: symmetricTokenString,
+			Token:       parsedToken,
+		},
+	})
+	It("Should return a token from a valid secret", func() {
+		mode, args := (&gotoken.TokenGetterArgs{}).SymmetricRobot(table, func(*http.Request) string { return symmetricTokenString })
+		r, err := http.NewRequest("GET", "/", nil)
+		Expect(err).ToNot(HaveOccurred())
+		goodTokenTest(mode, args, r)
+	})
+	It("Should return absent from a missing secret", func() {
+		mode, args := (&gotoken.TokenGetterArgs{}).SymmetricRobot(table, func(*http.Request) string { return "" })
+		r, err := http.NewRequest("GET", "/", nil)
+		Expect(err).ToNot(HaveOccurred())
+		missingTokenTest(mode, args, r)
+	})
+	It("Should return error from an unknown secret", func() {
+		mode, args := (&gotoken.TokenGetterArgs{}).SymmetricRobot(table, func(*http.Request) string { return "garbage" })
+		r, err := http.NewRequest("GET", "/", nil)
+		Expect(err).ToNot(HaveOccurred())
+		badTokenTest(mode, args, r)
+	})
 })

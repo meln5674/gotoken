@@ -31,6 +31,8 @@ const (
 	TokenModeRobotTLS TokenMode = "robot-tls"
 	// TokenModeBasic takes the token from a lookup table of trusted service account mTLS client certificate taken from a header
 	TokenModeRobotTLSTerminated TokenMode = "robot-tls-terminated"
+	// TokenModeSymmetricRobot takes an opaque token from a nested token extractor and maps it to a JWT from a lookup table
+	TokenModeSymmetricRobot TokenMode = "symmetric-robot"
 )
 
 // A TokenGetter can extract a token from a request. Return patterns:
@@ -51,12 +53,10 @@ type TokenGetterChain struct {
 func (t *TokenGetterChain) Getter() TokenGetter {
 	return func(req *http.Request) (token *jwt.Token, present bool, err error) {
 		for _, getter := range t.Getters {
+			fmt.Printf("Trying token getter %#v\n", getter)
 			token, present, err := getter(req)
-			if token != nil {
-				return token, true, nil
-			}
-			if err != nil {
-				return nil, present, err
+			if present {
+				return token, present, err
 			}
 		}
 		return nil, false, nil
@@ -66,6 +66,8 @@ func (t *TokenGetterChain) Getter() TokenGetter {
 type TokenGetterArgs struct {
 	HeaderName               string
 	LookupTable              RobotLookupTable
+	SymmetricLookupTable     SymmetricRobotLookupTable
+	SymmetricSecretGetter    TokenStringGetter
 	Keyfunc                  jwt.Keyfunc
 	InsecureSkipVerification bool
 	Parser                   *jwt.Parser
@@ -115,6 +117,12 @@ func (t *TokenGetterArgs) RobotTLS(lookupTable RobotLookupTable) (TokenMode, *To
 	return TokenModeRobotTLS, t
 }
 
+func (t *TokenGetterArgs) SymmetricRobot(lookupTable SymmetricRobotLookupTable, getter TokenStringGetter) (TokenMode, *TokenGetterArgs) {
+	t.SymmetricLookupTable = lookupTable
+	t.SymmetricSecretGetter = getter
+	return TokenModeSymmetricRobot, t
+}
+
 func GetTokenStringGetter(mode TokenMode, args *TokenGetterArgs) (TokenStringGetter, bool) {
 	switch mode {
 	case TokenModeRaw:
@@ -141,6 +149,8 @@ func GetTokenGetter(mode TokenMode, args *TokenGetterArgs) (TokenGetter, bool) {
 		return GetRobotTLSToken(args.LookupTable), true
 	case TokenModeRobotTLSTerminated:
 		return GetRobotTLSTerminatedToken(args.HeaderName, args.LookupTable), true
+	case TokenModeSymmetricRobot:
+		return GetSymmetricRobotToken(args.SymmetricLookupTable, args.SymmetricSecretGetter), true
 	}
 	return nil, false
 }
@@ -156,8 +166,10 @@ func GetBearerTokenString() TokenStringGetter {
 		h := req.Header.Get(HeaderAuthorization)
 		prefix := HeaderAuthorizationBearerPrefix
 		if !strings.HasPrefix(h, prefix) {
+			fmt.Printf("Request %#v did not have bearer token: %s\n", req, h)
 			return ""
 		}
+		fmt.Printf("Request %#v had bearer token: %s\n", req, h)
 		return strings.TrimPrefix(h, prefix)
 	}
 }
@@ -192,8 +204,10 @@ func FromStringGetter(g TokenStringGetter, parser *jwt.Parser, insecure bool, ke
 	return func(req *http.Request) (token *jwt.Token, present bool, err error) {
 		tokenString := g(req)
 		if tokenString == "" {
+			fmt.Printf("Request produced empty token string\n")
 			return nil, false, nil
 		}
+		fmt.Printf("Parsing request token %s\n", tokenString)
 		token, err = ParseToken(tokenString, parser, insecure, keyFunc)
 		return token, true, err
 	}
@@ -223,6 +237,20 @@ func GetRobotTLSTerminatedToken(name string, robots RobotLookupTable) TokenGette
 			return nil, true, err
 		}
 		robot, ok := robots.Lookup(cert)
+		if !ok {
+			return nil, true, ErrNoSuchRobot
+		}
+		return robot.Token, true, nil
+	}
+}
+
+func GetSymmetricRobotToken(robots SymmetricRobotLookupTable, g TokenStringGetter) TokenGetter {
+	return func(req *http.Request) (token *jwt.Token, present bool, err error) {
+		tokenString := g(req)
+		if tokenString == "" {
+			return nil, false, nil
+		}
+		robot, ok := robots.Lookup(tokenString)
 		if !ok {
 			return nil, true, ErrNoSuchRobot
 		}
