@@ -33,6 +33,8 @@ const (
 	TokenModeRobotTLSTerminated TokenMode = "robot-tls-terminated"
 	// TokenModeSymmetricRobot takes an opaque token from a nested token extractor and maps it to a JWT from a lookup table
 	TokenModeSymmetricRobot TokenMode = "symmetric-robot"
+	// TokenModeOIDCCookie looks first for an oidc callback code, and if not present, checks for a signed cookie containing the token
+	TokenModeOIDCCookie TokenMode = "oidc-cookie"
 )
 
 // A TokenGetter can extract a token from a request. Return patterns:
@@ -47,7 +49,8 @@ type TokenGetter func(req *http.Request) (token *jwt.Token, present bool, err er
 type TokenStringGetter func(req *http.Request) string
 
 type TokenGetterChain struct {
-	Getters []TokenGetter
+	Getters         []TokenGetter
+	ContinueOnError bool
 }
 
 func (t *TokenGetterChain) Getter() TokenGetter {
@@ -55,10 +58,11 @@ func (t *TokenGetterChain) Getter() TokenGetter {
 		for _, getter := range t.Getters {
 			fmt.Printf("Trying token getter %#v\n", getter)
 			token, present, err := getter(req)
-			if present {
+			if present && (err == nil || !t.ContinueOnError) {
 				return token, present, err
 			}
 		}
+		// TODO: multi-error
 		return nil, false, nil
 	}
 }
