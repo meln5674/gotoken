@@ -107,6 +107,28 @@ func missingTokenTest(mode string, args *gotoken.TokenGetterArgs, req *http.Requ
 	Expect(token).To(BeNil())
 }
 
+var _ = Describe("Insecure Hardcoded Token", Ordered, func() {
+	It("Should panic if the safety is on", func() {
+		r, err := http.NewRequest("GET", "/", nil)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(func() {
+			gotoken.InsecureHardcodedToken(parsedToken)(r)
+		}).To(Panic())
+	})
+	It("Should return the token if the safety is off", func() {
+		gotoken.InsecureAllowHardcodedToken = true
+		DeferCleanup(func() {
+			gotoken.InsecureAllowHardcodedToken = true
+		})
+		r, err := http.NewRequest("GET", "/", nil)
+		Expect(err).ToNot(HaveOccurred())
+		t, ok, err := gotoken.InsecureHardcodedToken(parsedToken)(r)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(t).To(Equal(parsedToken))
+	})
+})
+
 var _ = Describe("Raw Token Mode", func() {
 	mode, args := (&gotoken.TokenGetterArgs{}).Secure(GetTestKey).Raw("DummyHeader", defaultParser)
 	mode2, insecureArgs := (&gotoken.TokenGetterArgs{}).Insecure().Raw("DummyHeader", defaultParser)

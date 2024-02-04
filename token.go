@@ -3,6 +3,7 @@ package gotoken
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -43,6 +44,24 @@ const (
 // token, true, nil - Token present and valid
 // Functions must not return an error if that error indicates that the material cannot be obtained or is not present.
 type TokenGetter func(req *http.Request) (token *jwt.Token, present bool, err error)
+
+// InsecureAllowHardcodedToken is a safety lock that causes InsecureHardcodedToken to panic.
+// It can be disabled by setting it, or by setting the environment variable GOTOKEN_INSECURE_ALLOW_HARDCODED_TOKEN
+// to a non-empty string.
+var InsecureAllowHardcodedToken = os.Getenv("GOTOKEN_INSECURE_ALLOW_HARDCODED_TOKEN") != ""
+
+// InsecureHardcodedTokens returns a TokenGetter which returns a hard-coded token.
+// It should obviously never be used in a production environment, and should only be used
+// in development and test environments.
+// As a safety lock, this will panic if InsecureAllowHardCodedToken is not set to true.
+func InsecureHardcodedToken(token *jwt.Token) TokenGetter {
+	return func(req *http.Request) (*jwt.Token, bool, error) {
+		if !InsecureAllowHardcodedToken {
+			panic("A hardcoded token was attempted to be used without disabling the safety lock")
+		}
+		return token, true, nil
+	}
+}
 
 // A TokenStringGetter can extract a token string from a request, but does not parse or validate it.
 // If the token is not present, it should return an empty string
