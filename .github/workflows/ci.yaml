@@ -1,0 +1,43 @@
+name: CI
+
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ['*']
+  pull_request: {}
+
+env:
+  GO_VERSION: 1.21.5
+
+  GOPRIVATE: 'github.com/meln5674/*'
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      # Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+
+      - name: Download Dependencies
+        run: |
+          make deps
+      - name: Lint
+        run: |
+          make vet
+      - name: Test
+        run: |
+          make test
+
